@@ -1,0 +1,119 @@
+name: Build, upload, and tag `supertd`
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: 'ubuntu-24.04-arm'
+            triple: 'aarch64-unknown-linux-gnu'
+          - os: 'ubuntu-24.04'
+            triple: 'aarch64-unknown-linux-musl'
+            cross: true
+          - os: 'ubuntu-24.04'
+            triple: 'x86_64-unknown-linux-gnu'
+          - os: 'ubuntu-24.04'
+            triple: 'x86_64-unknown-linux-musl'
+          - os: 'macos-14'
+            triple: 'aarch64-apple-darwin'
+          - os: 'macos-13'
+            triple: 'x86_64-apple-darwin'
+          - os: 'windows-2022'
+            triple: 'x86_64-pc-windows-msvc'
+            is_windows: true
+    runs-on: ${{ matrix.target.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install packages (Ubuntu)
+        if: startsWith(matrix.target.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xz-utils liblz4-tool musl-tools musl-dev
+      - uses: SebRollen/toml-action@v1.0.2
+        id: read_rust_toolchain
+        with:
+          file: 'rust-toolchain'
+          field: 'toolchain.channel'
+      - uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.read_rust_toolchain.outputs.value }}
+          targets: ${{ matrix.target.triple }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: supertd-upload
+          key: ${{ matrix.target.triple }}
+      - uses: actions-rs/install@v0.1
+        if: matrix.target.cross
+        with:
+          crate: cross
+          version: latest
+      - name: Set variables
+        id: set_variables
+        shell: bash
+        run: |
+          if [ -n "${{ matrix.target.is_windows }}" ]; then
+            echo "supertd_out=target/${{ matrix.target.triple }}/release/supertd.exe" >> "$GITHUB_OUTPUT"
+            echo "supertd_zst=artifacts/supertd-${{ matrix.target.triple }}.exe.zst" >> "$GITHUB_OUTPUT"
+          else
+            echo "supertd_out=target/${{ matrix.target.triple }}/release/supertd" >> "$GITHUB_OUTPUT"
+            echo "supertd_zst=artifacts/supertd-${{ matrix.target.triple }}.zst" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Build
+        shell: bash
+        env:
+          RUSTFLAGS: "-C strip=debuginfo -C codegen-units=1"
+        run: |
+          if [ -n "${{ matrix.target.cross }}" ]; then
+            CARGO=cross
+          else
+            CARGO=cargo
+          fi
+          $CARGO build --release --bin supertd --target ${{ matrix.target.triple }}
+      - name: Move binary to artifacts/
+        shell: bash
+        run: |
+          mkdir artifacts
+          zstd -z ${{ steps.set_variables.outputs.supertd_out }} -o ${{ steps.set_variables.outputs.supertd_zst }}
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: supertd-${{ matrix.target.triple }}
+          path: artifacts/
+
+  release_latest_snapshot:
+    name: Release latest push snapshot
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Get snapshot tag (YYYYMMDD-HHMMSS)
+        id: get_tag
+        run: |
+          TAG=snapshot-$(date +'%Y%m%d-%H%M%S')
+          echo "tag_name=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/publish_tag
+        with:
+          tag: "${{ steps.get_tag.outputs.tag_name }}"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: facebook/dotslash-publish-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          config: .github/dotslash-config.json
+          tag: "${{ steps.get_tag.outputs.tag_name }}"
