@@ -113,6 +113,7 @@ M proj/foo.rs
 M bar.rs
 A baz/file.txt
 R quux.js
+D blah.ts
 "#;
         assert_eq!(
             parse_status(&src[1..]).unwrap(),
@@ -120,7 +121,8 @@ R quux.js
                 Status::Modified(ProjectRelativePath::new("proj/foo.rs")),
                 Status::Modified(ProjectRelativePath::new("bar.rs")),
                 Status::Added(ProjectRelativePath::new("baz/file.txt")),
-                Status::Removed(ProjectRelativePath::new("quux.js"))
+                Status::Removed(ProjectRelativePath::new("quux.js")),
+                Status::Removed(ProjectRelativePath::new("blah.ts")),
             ]
         );
     }
