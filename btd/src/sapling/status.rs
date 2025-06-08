@@ -37,12 +37,40 @@ impl Status<ProjectRelativePath> {
         if it.next() != Some(' ') {
             return Err(StatusParseError::UnexpectedFormat(value.to_owned()).into());
         }
-        let path = ProjectRelativePath::new(it.as_str());
+        let rest = it.as_str();
         match typ {
-            Some('A') => Ok(Self::Added(path)),
-            Some('M') => Ok(Self::Modified(path)),
-            Some('R') => Ok(Self::Removed(path)),
-            Some('D') => Ok(Self::Removed(path)), // used by jujutsu
+            Some('A') => Ok(Self::Added(ProjectRelativePath::new(rest))),
+            Some('M') => Ok(Self::Modified(ProjectRelativePath::new(rest))),
+            Some('R') => Ok(Self::Removed(ProjectRelativePath::new(rest))),
+            Some('D') => Ok(Self::Removed(ProjectRelativePath::new(rest))), // used by jujutsu
+            Some('C') => {
+                // Handle copy format: "source => destination" or "path/{source => destination}/rest"
+                if let Some(arrow_pos) = rest.find(" => ") {
+                    let after_arrow = &rest[arrow_pos + 4..];
+                    
+                    // Check if this is a brace expansion format like "path/{source => dest}/rest"
+                    if let Some(open_brace) = rest.find('{') {
+                        if let Some(close_brace) = after_arrow.find('}') {
+                            // Extract the prefix before the brace
+                            let prefix = &rest[..open_brace];
+                            // Extract the destination from within the braces
+                            let dest_in_braces = &after_arrow[..close_brace];
+                            // Extract the suffix after the closing brace
+                            let suffix = &after_arrow[close_brace + 1..];
+                            
+                            let full_destination = format!("{}{}{}", prefix, dest_in_braces, suffix);
+                            Ok(Self::Added(ProjectRelativePath::new(&full_destination)))
+                        } else {
+                            return Err(StatusParseError::UnexpectedFormat(value.to_owned()).into());
+                        }
+                    } else {
+                        // Simple "source => destination" format
+                        Ok(Self::Added(ProjectRelativePath::new(after_arrow)))
+                    }
+                } else {
+                    return Err(StatusParseError::UnexpectedFormat(value.to_owned()).into());
+                }
+            }
             _ => Err(StatusParseError::UnknownPrefix(value.to_owned()).into()),
         }
     }
@@ -113,6 +141,8 @@ M proj/foo.rs
 M bar.rs
 A baz/file.txt
 R quux.js
+D blah.ts
+C buck/third-party/rust/fixups/{tokio-openssl => heapless}/fixups.toml
 "#;
         assert_eq!(
             parse_status(&src[1..]).unwrap(),
@@ -120,7 +150,9 @@ R quux.js
                 Status::Modified(ProjectRelativePath::new("proj/foo.rs")),
                 Status::Modified(ProjectRelativePath::new("bar.rs")),
                 Status::Added(ProjectRelativePath::new("baz/file.txt")),
-                Status::Removed(ProjectRelativePath::new("quux.js"))
+                Status::Removed(ProjectRelativePath::new("quux.js")),
+                Status::Removed(ProjectRelativePath::new("blah.ts")),
+                Status::Added(ProjectRelativePath::new("buck/third-party/rust/fixups/heapless/fixups.toml"))
             ]
         );
     }
